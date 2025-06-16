@@ -2,7 +2,7 @@
  * Server configuration for the Augment MCP Server
  */
 
-import type { ServerConfig, AugmentConfig } from '../types/index.js';
+import type { ServerConfig, AugmentConfig } from '../interfaces/index.js';
 
 export const defaultConfig: ServerConfig = {
   name: 'augment-mcp-server',

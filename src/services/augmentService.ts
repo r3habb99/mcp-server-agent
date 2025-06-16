@@ -2,7 +2,7 @@
  * Augment AI integration service
  */
 
-import type { CodeAnalysisResult, AugmentConfig } from '../types/index.js';
+import type { CodeAnalysisResult, AugmentConfig } from '../interfaces/index.js';
 import { logInfo, logError, logDebug } from '../utils/logger.js';
 import { augmentConfig } from '../server/config.js';
 

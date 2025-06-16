@@ -5,7 +5,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { glob } from 'glob';
-import type { FileInfo, SearchOptions, SearchResult } from '../types/index.js';
+import type { FileInfo, SearchOptions, SearchResult } from '../interfaces/index.js';
 import { validatePath, validateFileExists, validateDirectoryExists, validateFileSize, isTextFile } from '../utils/validation.js';
 import { logInfo, logError, logDebug } from '../utils/logger.js';
 import { securityConfig } from '../server/config.js';

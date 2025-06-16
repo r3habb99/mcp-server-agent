@@ -6,7 +6,7 @@ import os from 'os';
 import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import si from 'systeminformation';
-import type { SystemInfo, ProcessInfo, NetworkInfo, HealthCheck } from '../types/index.js';
+import type { SystemInfo, ProcessInfo, NetworkInfo, HealthCheck } from '../interfaces/index.js';
 import { logInfo, logError, logDebug, logWarn } from '../utils/logger.js';
 import { securityConfig } from '../server/config.js';
 
