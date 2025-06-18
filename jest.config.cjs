@@ -6,6 +6,8 @@ module.exports = {
   testMatch: [
     '**/__tests__/**/*.ts',
     '**/?(*.)+(spec|test).ts',
+    '**/__tests__/**/*.js',
+    '**/?(*.)+(spec|test).js',
   ],
   transform: {
     '^.+\\.ts$': 'ts-jest',
@@ -33,7 +35,7 @@ module.exports = {
       statements: 70,
     },
   },
-  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
+  setupFiles: ['<rootDir>/tests/setup.js'],
   testTimeout: 30000,
   verbose: true,
 };

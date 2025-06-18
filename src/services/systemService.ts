@@ -9,6 +9,9 @@ import si from 'systeminformation';
 import type { SystemInfo, ProcessInfo, NetworkInfo, HealthCheck } from '../interfaces/index.js';
 import { logInfo, logError, logDebug, logWarn } from '../utils/logger.js';
 import { securityConfig } from '../server/config.js';
+import { validateCommand } from '../utils/validation.js';
+import { systemInfoCache } from '../utils/cache.js';
+import { performanceMonitor } from '../utils/performance.js';
 
 const execAsync = promisify(exec);
 
@@ -20,93 +23,131 @@ export class SystemService {
     this.commandTimeout = securityConfig.commandTimeout;
   }
 
+
+
   /**
-   * Get basic system information
+   * Get basic system information with caching
    */
   async getSystemInfo(): Promise<SystemInfo> {
-    try {
-      logDebug('Retrieving system information');
+    return performanceMonitor.timeOperation('SystemService.getSystemInfo', async () => {
+      try {
+        // Check cache first
+        const cacheKey = 'system:basic-info';
+        const cached = systemInfoCache.get(cacheKey);
+        if (cached) {
+          logDebug('System information from cache');
+          return cached;
+        }
 
-      // We don't need the detailed info for basic system info
-      // const [cpu, memory, osInfo] = await Promise.all([
-      //   si.cpu(),
-      //   si.mem(),
-      //   si.osInfo(),
-      // ]);
+        logDebug('Retrieving system information');
 
-      const systemInfo: SystemInfo = {
-        platform: os.platform(),
-        arch: os.arch(),
-        nodeVersion: process.version,
-        totalMemory: os.totalmem(),
-        freeMemory: os.freemem(),
-        uptime: os.uptime(),
-        loadAverage: os.loadavg(),
-        cpuCount: os.cpus().length,
-        hostname: os.hostname(),
-      };
+        const systemInfo: SystemInfo = {
+          platform: os.platform(),
+          arch: os.arch(),
+          nodeVersion: process.version,
+          totalMemory: os.totalmem(),
+          freeMemory: os.freemem(),
+          uptime: os.uptime(),
+          loadAverage: os.loadavg(),
+          cpuCount: os.cpus().length,
+          hostname: os.hostname(),
+        };
 
-      logInfo('System information retrieved successfully');
-      return systemInfo;
-    } catch (error) {
-      logError('Failed to get system information', error as Error);
-      throw error;
-    }
+        // Cache the result
+        systemInfoCache.set(cacheKey, systemInfo);
+
+        logInfo('System information retrieved successfully');
+        return systemInfo;
+      } catch (error) {
+        logError('Failed to get system information', error as Error);
+        throw error;
+      }
+    });
   }
 
   /**
-   * Get detailed CPU information
+   * Get detailed CPU information with caching
    */
   async getCpuInfo(): Promise<any> {
-    try {
-      const [cpu, currentLoad] = await Promise.all([
-        si.cpu(),
-        si.currentLoad(),
-      ]);
+    return performanceMonitor.timeOperation('SystemService.getCpuInfo', async () => {
+      try {
+        // Check cache first (shorter TTL for dynamic data)
+        const cacheKey = 'system:cpu-info';
+        const cached = systemInfoCache.get(cacheKey);
+        if (cached) {
+          logDebug('CPU information from cache');
+          return cached;
+        }
 
-      return {
-        manufacturer: cpu.manufacturer,
-        brand: cpu.brand,
-        speed: cpu.speed,
-        cores: cpu.cores,
-        physicalCores: cpu.physicalCores,
-        processors: cpu.processors,
-        currentLoad: currentLoad.currentLoad,
-        currentLoadUser: currentLoad.currentLoadUser,
-        currentLoadSystem: currentLoad.currentLoadSystem,
-        currentLoadIdle: currentLoad.currentLoadIdle,
-      };
-    } catch (error) {
-      logError('Failed to get CPU information', error as Error);
-      throw error;
-    }
+        const [cpu, currentLoad] = await Promise.all([
+          si.cpu(),
+          si.currentLoad(),
+        ]);
+
+        const cpuInfo = {
+          manufacturer: cpu.manufacturer,
+          brand: cpu.brand,
+          speed: cpu.speed,
+          cores: cpu.cores,
+          physicalCores: cpu.physicalCores,
+          processors: cpu.processors,
+          currentLoad: currentLoad.currentLoad,
+          currentLoadUser: currentLoad.currentLoadUser,
+          currentLoadSystem: currentLoad.currentLoadSystem,
+          currentLoadIdle: currentLoad.currentLoadIdle,
+        };
+
+        // Cache with shorter TTL for dynamic data
+        systemInfoCache.set(cacheKey, cpuInfo);
+
+        return cpuInfo;
+      } catch (error) {
+        logError('Failed to get CPU information', error as Error);
+        throw error;
+      }
+    });
   }
 
   /**
-   * Get memory information
+   * Get memory information with caching
    */
   async getMemoryInfo(): Promise<any> {
-    try {
-      const memory = await si.mem();
-      
-      return {
-        total: memory.total,
-        free: memory.free,
-        used: memory.used,
-        active: memory.active,
-        available: memory.available,
-        buffers: memory.buffers,
-        cached: memory.cached,
-        slab: memory.slab,
-        buffcache: memory.buffcache,
-        swaptotal: memory.swaptotal,
-        swapused: memory.swapused,
-        swapfree: memory.swapfree,
-      };
-    } catch (error) {
-      logError('Failed to get memory information', error as Error);
-      throw error;
-    }
+    return performanceMonitor.timeOperation('SystemService.getMemoryInfo', async () => {
+      try {
+        // Check cache first (shorter TTL for dynamic data)
+        const cacheKey = 'system:memory-info';
+        const cached = systemInfoCache.get(cacheKey);
+        if (cached) {
+          logDebug('Memory information from cache');
+          return cached;
+        }
+
+        const memory = await si.mem();
+
+        const memoryInfo = {
+          total: memory.total,
+          free: memory.free,
+          used: memory.used,
+          active: memory.active,
+          available: memory.available,
+          buffers: memory.buffers,
+          cached: memory.cached,
+          slab: memory.slab,
+          buffcache: memory.buffcache,
+          swaptotal: memory.swaptotal,
+          swapused: memory.swapused,
+          swapfree: memory.swapfree,
+        };
+
+        // Cache with shorter TTL for dynamic data
+        systemInfoCache.set(cacheKey, memoryInfo);
+
+        return memoryInfo;
+      } catch (error) {
+        logError('Failed to get memory information', error as Error);
+        throw error;
+      }
+    });
   }
 
   /**
@@ -203,14 +244,11 @@ export class SystemService {
   } = {}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     try {
       const { cwd = process.cwd(), timeout = this.commandTimeout, shell = false } = options;
-      
+
       logDebug('Executing command', { command, args, cwd, timeout });
 
-      // Security check: prevent dangerous commands
-      const dangerousCommands = ['rm', 'del', 'format', 'fdisk', 'mkfs', 'dd'];
-      if (dangerousCommands.some(cmd => command.toLowerCase().includes(cmd))) {
-        throw new Error(`Dangerous command not allowed: ${command}`);
-      }
+      // Enhanced security validation
+      validateCommand(command, args);
 
       const fullCommand = shell ? command : `${command} ${args.join(' ')}`;
       

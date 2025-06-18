@@ -1,13 +1,13 @@
 /**
  * Tests for FileService
- */
+*/
 
-import fs from 'fs-extra';
-import path from 'path';
-import { FileService } from '../../src/services/fileService.js';
+const fs = require('fs-extra');
+const path = require('path');
+const { FileService } = require('../../build/services/fileService.js');
 
 describe('FileService', () => {
-  let fileService: FileService;
+  let fileService: any;
   let testDir: string;
 
   beforeEach(async () => {

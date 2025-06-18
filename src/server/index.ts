@@ -14,6 +14,7 @@ import { registerResources } from './handlers/resources.js';
 import { registerPrompts } from './handlers/prompts.js';
 import { config, securityConfig, performanceConfig, featureFlags } from './config.js';
 import { SystemService } from '../services/systemService.js';
+import { PerformanceService } from '../services/performanceService.js';
 import { logInfo, logError, logWarn } from '../utils/logger.js';
 
 // Global error handlers
@@ -30,18 +31,23 @@ process.on('unhandledRejection', (reason, promise) => {
 // Graceful shutdown handling
 let server: McpServer | null = null;
 let systemService: SystemService | null = null;
+let performanceService: PerformanceService | null = null;
 
 const gracefulShutdown = (signal: string) => {
   logInfo(`Received ${signal}, shutting down gracefully...`);
-  
+
+  if (performanceService) {
+    performanceService.shutdown();
+  }
+
   if (systemService) {
     systemService.cleanup();
   }
-  
+
   if (server) {
     server.close();
   }
-  
+
   process.exit(0);
 };
 
@@ -72,6 +78,7 @@ async function startServer(): Promise<void> {
 
     // Initialize services
     systemService = new SystemService();
+    performanceService = new PerformanceService();
 
     // Register capabilities based on feature flags
     if (featureFlags.fileOperations) {
@@ -106,6 +113,12 @@ async function startServer(): Promise<void> {
         prompts: featureFlags.codeReviewPrompts || featureFlags.documentationPrompts,
       },
     });
+
+    // Start performance monitoring
+    if (performanceConfig.cache.enabled) {
+      performanceService.startMonitoring();
+      logInfo('Performance monitoring started');
+    }
 
     // Start health monitoring if enabled
     if (featureFlags.experimental.realTimeMonitoring) {

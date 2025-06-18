@@ -110,33 +110,15 @@ export const networkSchema = z.object({
   timeout: z.number().positive().max(30000).default(5000)
 });
 
+// Import enhanced security validation
+import { SecurityValidator } from './security.js';
+
 // Validation helper functions
 export const validatePath = (inputPath: string): string => {
-  const normalizedPath = path.normalize(inputPath);
-  
-  // Prevent path traversal
-  if (normalizedPath.includes('..')) {
-    throw new Error('Path traversal not allowed');
-  }
-  
-  // Ensure path is within allowed boundaries (you can customize this)
-  const allowedRoots = [
-    process.cwd(),
-    process.env.HOME || '/home',
-    '/tmp',
-    '/var/tmp'
-  ];
-  
-  const absolutePath = path.resolve(normalizedPath);
-  const isAllowed = allowedRoots.some(root => 
-    absolutePath.startsWith(path.resolve(root))
-  );
-  
-  if (!isAllowed) {
-    throw new Error('Path not within allowed directories');
-  }
-  
-  return absolutePath;
+  return SecurityValidator.validatePath(inputPath, {
+    allowAbsolute: false,
+    maxLength: 1000
+  });
 };
 
 export const validateFileExists = async (filePath: string): Promise<void> => {
@@ -179,6 +161,14 @@ export const sanitizeFilename = (filename: string): string => {
     .replace(/\.\./g, '_')
     .trim()
     .substring(0, 255); // Limit filename length
+};
+
+export const validateCommand = (command: string, args: string[] = []): void => {
+  SecurityValidator.validateCommand(command, args);
+};
+
+export const validateFileContent = async (filePath: string, maxSize?: number): Promise<void> => {
+  return SecurityValidator.validateFileContent(filePath, maxSize);
 };
 
 export const isTextFile = (filePath: string): boolean => {

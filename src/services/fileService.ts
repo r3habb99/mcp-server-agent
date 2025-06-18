@@ -9,6 +9,8 @@ import type { FileInfo, SearchOptions, SearchResult } from '../interfaces/index.
 import { validatePath, validateFileExists, validateDirectoryExists, validateFileSize, isTextFile } from '../utils/validation.js';
 import { logInfo, logError, logDebug } from '../utils/logger.js';
 import { securityConfig } from '../server/config.js';
+import { fileCache, searchCache, createCachedFunction } from '../utils/cache.js';
+import { performanceMonitor, createTimedFunction, createConcurrencyLimitedFunction } from '../utils/performance.js';
 
 export class FileService {
   private readonly maxFileSize: number;
@@ -18,50 +20,77 @@ export class FileService {
   }
 
   /**
-   * Read file content
+   * Read file content with caching and performance monitoring
    */
   async readFile(filePath: string, encoding: BufferEncoding = 'utf8'): Promise<string> {
-    try {
-      const validatedPath = validatePath(filePath);
-      await validateFileExists(validatedPath);
-      await validateFileSize(validatedPath, this.maxFileSize);
+    return performanceMonitor.withConcurrencyLimit('fileOps', async () => {
+      return performanceMonitor.timeOperation('FileService.readFile', async () => {
+        try {
+          const validatedPath = validatePath(filePath);
+          await validateFileExists(validatedPath);
+          await validateFileSize(validatedPath, this.maxFileSize);
 
-      logDebug('Reading file', { path: validatedPath, encoding });
-      
-      const content = await fs.readFile(validatedPath, encoding);
-      logInfo('File read successfully', { path: validatedPath, size: content.length });
-      
-      return content;
-    } catch (error) {
-      logError('Failed to read file', error as Error, { path: filePath });
-      throw error;
-    }
+          // Check cache first
+          const cacheKey = `file:${validatedPath}:${encoding}`;
+          const cached = fileCache.get(cacheKey);
+          if (cached) {
+            logDebug('File read from cache', { path: validatedPath, encoding });
+            return cached;
+          }
+
+          logDebug('Reading file from disk', { path: validatedPath, encoding });
+
+          const content = await fs.readFile(validatedPath, encoding);
+
+          // Cache the content if it's not too large (< 1MB)
+          if (content.length < 1024 * 1024) {
+            fileCache.set(cacheKey, content);
+          }
+
+          logInfo('File read successfully', { path: validatedPath, size: content.length });
+
+          return content;
+        } catch (error) {
+          logError('Failed to read file', error as Error, { path: filePath });
+          throw error;
+        }
+      }, { filePath, encoding });
+    });
   }
 
   /**
-   * Write file content
+   * Write file content with performance monitoring and cache invalidation
    */
   async writeFile(filePath: string, content: string, options: { overwrite?: boolean; encoding?: BufferEncoding } = {}): Promise<void> {
-    try {
-      const validatedPath = validatePath(filePath);
-      const { overwrite = false, encoding = 'utf8' } = options;
+    return performanceMonitor.withConcurrencyLimit('fileOps', async () => {
+      return performanceMonitor.timeOperation('FileService.writeFile', async () => {
+        try {
+          const validatedPath = validatePath(filePath);
+          const { overwrite = false, encoding = 'utf8' } = options;
 
-      // Check if file exists and overwrite is not allowed
-      if (!overwrite && await fs.pathExists(validatedPath)) {
-        throw new Error(`File already exists and overwrite is disabled: ${validatedPath}`);
-      }
+          // Check if file exists and overwrite is not allowed
+          if (!overwrite && await fs.pathExists(validatedPath)) {
+            throw new Error(`File already exists and overwrite is disabled: ${validatedPath}`);
+          }
 
-      // Ensure directory exists
-      await fs.ensureDir(path.dirname(validatedPath));
+          // Ensure directory exists
+          await fs.ensureDir(path.dirname(validatedPath));
 
-      logDebug('Writing file', { path: validatedPath, size: content.length, encoding });
-      
-      await fs.writeFile(validatedPath, content, encoding);
-      logInfo('File written successfully', { path: validatedPath, size: content.length });
-    } catch (error) {
-      logError('Failed to write file', error as Error, { path: filePath });
-      throw error;
-    }
+          logDebug('Writing file', { path: validatedPath, size: content.length, encoding });
+
+          await fs.writeFile(validatedPath, content, encoding);
+
+          // Invalidate cache for this file
+          const cacheKey = `file:${validatedPath}:${encoding}`;
+          fileCache.delete(cacheKey);
+
+          logInfo('File written successfully', { path: validatedPath, size: content.length });
+        } catch (error) {
+          logError('Failed to write file', error as Error, { path: filePath });
+          throw error;
+        }
+      }, { filePath, contentSize: content.length });
+    });
   }
 
   /**
@@ -271,96 +300,111 @@ export class FileService {
   }
 
   /**
-   * Search for files and content
+   * Search for files and content with caching and performance monitoring
    */
   async search(options: SearchOptions): Promise<SearchResult[]> {
-    try {
-      const validatedDirectory = validatePath(options.directory);
-      await validateDirectoryExists(validatedDirectory);
-
-      const {
-        pattern,
-        recursive = true,
-        includeHidden = false,
-        fileTypes = [],
-        maxResults = 100,
-      } = options;
-
-      logDebug('Starting search', { pattern, directory: validatedDirectory, recursive, fileTypes });
-
-      const results: SearchResult[] = [];
-      const searchPattern = recursive ? '**/*' : '*';
-      const globOptions = {
-        cwd: validatedDirectory,
-        dot: includeHidden,
-        nodir: true,
-      };
-
-      const files = await glob(searchPattern, globOptions);
-      
-      for (const file of files) {
-        if (results.length >= maxResults) break;
-
-        const fullPath = path.join(validatedDirectory, file);
-        const ext = path.extname(file).toLowerCase();
-
-        // Filter by file types if specified
-        if (fileTypes.length > 0 && !fileTypes.includes(ext)) {
-          continue;
-        }
-
-        // Only search in text files
-        if (!isTextFile(fullPath)) {
-          continue;
-        }
-
+    return performanceMonitor.withConcurrencyLimit('searches', async () => {
+      return performanceMonitor.timeOperation('FileService.search', async () => {
         try {
-          const content = await fs.readFile(fullPath, 'utf8');
-          const lines = content.split('\n');
-          
-          const regex = new RegExp(pattern, 'gi');
-          
-          for (let i = 0; i < lines.length; i++) {
+          const validatedDirectory = validatePath(options.directory);
+          await validateDirectoryExists(validatedDirectory);
+
+          const {
+            pattern,
+            recursive = true,
+            includeHidden = false,
+            fileTypes = [],
+            maxResults = 100,
+          } = options;
+
+          // Create cache key for search results
+          const cacheKey = `search:${JSON.stringify(options)}`;
+          const cached = searchCache.get(cacheKey);
+          if (cached) {
+            logDebug('Search results from cache', { pattern, directory: validatedDirectory });
+            return cached;
+          }
+
+          logDebug('Starting search', { pattern, directory: validatedDirectory, recursive, fileTypes });
+
+          const results: SearchResult[] = [];
+          const searchPattern = recursive ? '**/*' : '*';
+          const globOptions = {
+            cwd: validatedDirectory,
+            dot: includeHidden,
+            nodir: true,
+          };
+
+          const files = await glob(searchPattern, globOptions);
+
+          for (const file of files) {
             if (results.length >= maxResults) break;
 
-            const line = lines[i];
-            const matches = [...line.matchAll(regex)];
-            
-            for (const match of matches) {
-              if (results.length >= maxResults) break;
+            const fullPath = path.join(validatedDirectory, file);
+            const ext = path.extname(file).toLowerCase();
 
-              const contextStart = Math.max(0, i - 2);
-              const contextEnd = Math.min(lines.length - 1, i + 2);
-              const context = lines.slice(contextStart, contextEnd + 1).join('\n');
+            // Filter by file types if specified
+            if (fileTypes.length > 0 && !fileTypes.includes(ext)) {
+              continue;
+            }
 
-              results.push({
-                file: fullPath,
-                line: i + 1,
-                column: match.index! + 1,
-                match: match[0],
-                context,
-              });
+            // Only search in text files
+            if (!isTextFile(fullPath)) {
+              continue;
+            }
+
+            try {
+              const content = await fs.readFile(fullPath, 'utf8');
+              const lines = content.split('\n');
+
+              const regex = new RegExp(pattern, 'gi');
+
+              for (let i = 0; i < lines.length; i++) {
+                if (results.length >= maxResults) break;
+
+                const line = lines[i];
+                const matches = [...line.matchAll(regex)];
+
+                for (const match of matches) {
+                  if (results.length >= maxResults) break;
+
+                  const contextStart = Math.max(0, i - 2);
+                  const contextEnd = Math.min(lines.length - 1, i + 2);
+                  const context = lines.slice(contextStart, contextEnd + 1).join('\n');
+
+                  results.push({
+                    file: fullPath,
+                    line: i + 1,
+                    column: match.index! + 1,
+                    match: match[0],
+                    context,
+                  });
+                }
+              }
+            } catch (error) {
+              // Skip files that can't be read
+              logDebug('Skipping file due to read error', { file: fullPath, error });
+              continue;
             }
           }
+
+          // Cache the results
+          searchCache.set(cacheKey, results);
+
+          logInfo('Search completed', {
+            pattern,
+            directory: validatedDirectory,
+            resultCount: results.length,
+            filesSearched: files.length
+          });
+
+          return results;
         } catch (error) {
-          // Skip files that can't be read
-          logDebug('Skipping file due to read error', { file: fullPath, error });
-          continue;
+          logError('Search failed', error as Error, { options });
+          throw error;
         }
-      }
-
-      logInfo('Search completed', { 
-        pattern, 
-        directory: validatedDirectory, 
-        resultCount: results.length,
-        filesSearched: files.length 
-      });
-
-      return results;
-    } catch (error) {
-      logError('Search failed', error as Error, { options });
-      throw error;
-    }
+      }, { searchOptions: options });
+    });
   }
 
   /**

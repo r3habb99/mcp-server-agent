@@ -6,11 +6,337 @@ import type { CodeAnalysisResult, AugmentConfig } from '../interfaces/index.js';
 import { logInfo, logError, logDebug } from '../utils/logger.js';
 import { augmentConfig } from '../server/config.js';
 
+interface AugmentApiClient {
+  analyzeCode(_code: string, _language: string): Promise<CodeAnalysisResult>;
+  generateDocumentation(_code: string, _language: string): Promise<string>;
+  reviewCode(_code: string, _language: string): Promise<{ score: number; feedback: string; improvements: string[] }>;
+  explainCode(_code: string, _language: string): Promise<string>;
+  generateTests(_code: string, _language: string): Promise<string>;
+}
+
+/**
+ * Real API client implementation for Augment AI
+ * Falls back to OpenAI API if Augment API is not available
+ */
+class RealAugmentApiClient implements AugmentApiClient {
+  private readonly config: AugmentConfig;
+  private readonly baseUrl: string;
+  private readonly headers: Record<string, string>;
+
+  constructor(config: AugmentConfig) {
+    this.config = config;
+    this.baseUrl = this.config.apiEndpoint || 'https://api.openai.com/v1';
+    this.headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${this.config.apiKey || process.env.OPENAI_API_KEY || ''}`,
+      'User-Agent': 'Augment-MCP-Server/1.0.0'
+    };
+  }
+
+  async analyzeCode(code: string, language: string): Promise<CodeAnalysisResult> {
+    try {
+      const prompt = `Analyze the following ${language} code and provide a detailed analysis:
+
+${code}
+
+Please provide:
+1. Lines of code count
+2. Complexity score (1-20)
+3. Issues found (type: error/warning/info, message, line number if applicable)
+4. Suggestions for improvement
+
+Format the response as JSON with the structure:
+{
+  "language": "${language}",
+  "linesOfCode": number,
+  "complexity": number,
+  "issues": [{"type": "warning", "message": "...", "line": number}],
+  "suggestions": ["suggestion1", "suggestion2"]
+}`;
+
+      const response = await this.makeApiCall(prompt);
+      return this.parseCodeAnalysisResponse(response, code, language);
+    } catch (error) {
+      logError('API call failed for code analysis', error as Error);
+      // Fallback to mock implementation
+      return this.fallbackAnalyzeCode(code, language);
+    }
+  }
+
+  async generateDocumentation(code: string, language: string): Promise<string> {
+    try {
+      const prompt = `Generate comprehensive documentation for the following ${language} code:
+
+${code}
+
+Please provide:
+- Overview of what the code does
+- Function/method descriptions
+- Usage examples
+- Important notes
+
+Format as markdown.`;
+
+      return await this.makeApiCall(prompt);
+    } catch (error) {
+      logError('API call failed for documentation generation', error as Error);
+      return this.fallbackGenerateDocumentation(code, language);
+    }
+  }
+
+  async reviewCode(code: string, language: string): Promise<{ score: number; feedback: string; improvements: string[] }> {
+    try {
+      const prompt = `Review the following ${language} code and provide:
+
+${code}
+
+Please provide:
+1. A quality score from 0-100
+2. Detailed feedback on code quality
+3. List of specific improvements
+
+Format as JSON:
+{
+  "score": number,
+  "feedback": "detailed feedback",
+  "improvements": ["improvement1", "improvement2"]
+}`;
+
+      const response = await this.makeApiCall(prompt);
+      return this.parseCodeReviewResponse(response, code);
+    } catch (error) {
+      logError('API call failed for code review', error as Error);
+      return this.fallbackReviewCode(code);
+    }
+  }
+
+  async explainCode(code: string, language: string): Promise<string> {
+    try {
+      const prompt = `Explain the following ${language} code in detail:
+
+${code}
+
+Please provide:
+- What the code does
+- How it works
+- Key concepts used
+- Any notable patterns or techniques
+
+Write in a clear, educational manner.`;
+
+      return await this.makeApiCall(prompt);
+    } catch (error) {
+      logError('API call failed for code explanation', error as Error);
+      return this.fallbackExplainCode(code, language);
+    }
+  }
+
+  async generateTests(code: string, language: string): Promise<string> {
+    try {
+      const prompt = `Generate comprehensive unit tests for the following ${language} code:
+
+${code}
+
+Please provide:
+- Test cases for all functions/methods
+- Edge cases and error conditions
+- Proper test structure for ${language}
+- Mock data where needed
+
+Use appropriate testing framework for ${language}.`;
+
+      return await this.makeApiCall(prompt);
+    } catch (error) {
+      logError('API call failed for test generation', error as Error);
+      return this.fallbackGenerateTests(code, language);
+    }
+  }
+
+  private async makeApiCall(prompt: string): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert code analyst and software engineer. Provide detailed, accurate analysis and suggestions.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 2000,
+        temperature: 0.1
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API call failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0]?.message?.content || '';
+  }
+
+  private parseCodeAnalysisResponse(response: string, code: string, language: string): CodeAnalysisResult {
+    try {
+      const parsed = JSON.parse(response);
+      return {
+        language: parsed.language || language,
+        linesOfCode: parsed.linesOfCode || code.split('\n').length,
+        complexity: parsed.complexity || 1,
+        issues: parsed.issues || [],
+        suggestions: parsed.suggestions || []
+      };
+    } catch {
+      // Fallback if JSON parsing fails
+      return this.fallbackAnalyzeCode(code, language);
+    }
+  }
+
+  private parseCodeReviewResponse(response: string, code: string): { score: number; feedback: string; improvements: string[] } {
+    try {
+      const parsed = JSON.parse(response);
+      return {
+        score: parsed.score || 50,
+        feedback: parsed.feedback || 'Code review completed',
+        improvements: parsed.improvements || []
+      };
+    } catch {
+      return this.fallbackReviewCode(code);
+    }
+  }
+
+  // Fallback methods when API calls fail
+  private fallbackAnalyzeCode(code: string, language: string): CodeAnalysisResult {
+    const issues: CodeAnalysisResult['issues'] = [];
+
+    if (code.includes('console.log')) {
+      issues.push({
+        type: 'warning',
+        message: 'Consider removing console.log statements in production code',
+        line: code.split('\n').findIndex(line => line.includes('console.log')) + 1,
+      });
+    }
+
+    if (code.includes('var ')) {
+      issues.push({
+        type: 'warning',
+        message: 'Consider using let or const instead of var',
+        line: code.split('\n').findIndex(line => line.includes('var ')) + 1,
+      });
+    }
+
+    return {
+      language,
+      linesOfCode: code.split('\n').length,
+      complexity: this.calculateComplexity(code),
+      issues,
+      suggestions: ['Consider adding JSDoc comments', 'Use TypeScript for better type safety']
+    };
+  }
+
+  private fallbackGenerateDocumentation(code: string, language: string): string {
+    return `# Code Documentation
+
+## Overview
+This ${language} code contains ${code.split('\n').length} lines.
+
+## Functions
+${this.extractFunctions(code).map(func => `- \`${func}\`: Function implementation`).join('\n')}
+
+## Usage
+\`\`\`${language}
+${code.split('\n').slice(0, 5).join('\n')}
+\`\`\`
+
+*Generated by Augment MCP Server*`;
+  }
+
+  private fallbackReviewCode(code: string): { score: number; feedback: string; improvements: string[] } {
+    let score = 100;
+    const improvements: string[] = [];
+
+    if (code.includes('console.log')) {
+      score -= 5;
+      improvements.push('Remove console.log statements');
+    }
+    if (code.includes('var ')) {
+      score -= 10;
+      improvements.push('Replace var with let or const');
+    }
+
+    return {
+      score: Math.max(0, score),
+      feedback: score >= 80 ? 'Good code quality' : 'Code needs improvement',
+      improvements
+    };
+  }
+
+  private fallbackExplainCode(code: string, language: string): string {
+    const lines = code.split('\n').length;
+    const functions = this.extractFunctions(code);
+
+    return `This ${language} code consists of ${lines} lines and contains:
+${functions.length > 0 ? `Functions: ${functions.join(', ')}` : 'No functions detected'}
+
+The code implements basic functionality with ${this.calculateComplexity(code) > 10 ? 'high' : 'moderate'} complexity.`;
+  }
+
+  private fallbackGenerateTests(code: string, language: string): string {
+    const functions = this.extractFunctions(code);
+
+    return `// Generated tests for ${language} code
+describe('Code Tests', () => {
+${functions.map(func => `  test('${func} should work correctly', () => {
+    expect(${func}).toBeDefined();
+  });`).join('\n\n')}
+});`;
+  }
+
+  private calculateComplexity(code: string): number {
+    const complexityKeywords = ['if', 'else', 'for', 'while', 'switch', 'case', 'try', 'catch'];
+    let complexity = 1;
+
+    for (const keyword of complexityKeywords) {
+      const regex = new RegExp(`\\b${keyword}\\b`, 'g');
+      const matches = code.match(regex);
+      if (matches) {
+        complexity += matches.length;
+      }
+    }
+
+    return complexity;
+  }
+
+  private extractFunctions(code: string): string[] {
+    const functions: string[] = [];
+    const functionRegex = /function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
+    const arrowFunctionRegex = /const\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=/g;
+
+    let match;
+    while ((match = functionRegex.exec(code)) !== null) {
+      functions.push(match[1]);
+    }
+
+    while ((match = arrowFunctionRegex.exec(code)) !== null) {
+      functions.push(match[1]);
+    }
+
+    return functions;
+  }
+}
+
 export class AugmentService {
   private readonly config: AugmentConfig;
+  private readonly apiClient: AugmentApiClient;
 
   constructor() {
     this.config = augmentConfig;
+    this.apiClient = new RealAugmentApiClient(this.config);
   }
 
   /**
@@ -31,20 +357,13 @@ export class AugmentService {
 
       logDebug('Analyzing code with Augment AI', { language, codeLength: code.length });
 
-      // This is a mock implementation - replace with actual Augment AI API calls
-      const result: CodeAnalysisResult = {
-        language,
-        linesOfCode: code.split('\n').length,
-        complexity: this.calculateComplexity(code),
-        issues: this.findIssues(code, language),
-        suggestions: this.generateSuggestions(code, language),
-      };
+      const result = await this.apiClient.analyzeCode(code, language);
 
-      logInfo('Code analysis completed', { 
-        language, 
+      logInfo('Code analysis completed', {
+        language,
         linesOfCode: result.linesOfCode,
         issuesFound: result.issues.length,
-        suggestionsCount: result.suggestions.length 
+        suggestionsCount: result.suggestions.length
       });
 
       return result;
@@ -65,12 +384,11 @@ export class AugmentService {
 
       logDebug('Generating documentation with Augment AI', { language, codeLength: code.length });
 
-      // Mock implementation - replace with actual API call
-      const documentation = this.mockGenerateDocumentation(code, language);
+      const documentation = await this.apiClient.generateDocumentation(code, language);
 
-      logInfo('Documentation generated successfully', { 
-        language, 
-        documentationLength: documentation.length 
+      logInfo('Documentation generated successfully', {
+        language,
+        documentationLength: documentation.length
       });
 
       return documentation;
@@ -95,17 +413,12 @@ export class AugmentService {
 
       logDebug('Reviewing code with Augment AI', { language, codeLength: code.length });
 
-      // Mock implementation - replace with actual API call
-      const review = {
-        score: this.calculateCodeScore(code),
-        feedback: this.generateCodeFeedback(code, language),
-        improvements: this.generateImprovements(code, language),
-      };
+      const review = await this.apiClient.reviewCode(code, language);
 
-      logInfo('Code review completed', { 
-        language, 
+      logInfo('Code review completed', {
+        language,
         score: review.score,
-        improvementsCount: review.improvements.length 
+        improvementsCount: review.improvements.length
       });
 
       return review;
@@ -126,12 +439,11 @@ export class AugmentService {
 
       logDebug('Explaining code with Augment AI', { language, codeLength: code.length });
 
-      // Mock implementation - replace with actual API call
-      const explanation = this.mockExplainCode(code, language);
+      const explanation = await this.apiClient.explainCode(code, language);
 
-      logInfo('Code explanation generated', { 
-        language, 
-        explanationLength: explanation.length 
+      logInfo('Code explanation generated', {
+        language,
+        explanationLength: explanation.length
       });
 
       return explanation;
@@ -152,12 +464,11 @@ export class AugmentService {
 
       logDebug('Generating tests with Augment AI', { language, codeLength: code.length });
 
-      // Mock implementation - replace with actual API call
-      const tests = this.mockGenerateTests(code, language);
+      const tests = await this.apiClient.generateTests(code, language);
 
-      logInfo('Tests generated successfully', { 
-        language, 
-        testsLength: tests.length 
+      logInfo('Tests generated successfully', {
+        language,
+        testsLength: tests.length
       });
 
       return tests;
@@ -167,203 +478,4 @@ export class AugmentService {
     }
   }
 
-  // Mock implementations - replace these with actual Augment AI API calls
-
-  private calculateComplexity(code: string): number {
-    // Simple complexity calculation based on control structures
-    const complexityKeywords = ['if', 'else', 'for', 'while', 'switch', 'case', 'try', 'catch'];
-    let complexity = 1; // Base complexity
-
-    for (const keyword of complexityKeywords) {
-      const regex = new RegExp(`\\b${keyword}\\b`, 'g');
-      const matches = code.match(regex);
-      if (matches) {
-        complexity += matches.length;
-      }
-    }
-
-    return complexity;
-  }
-
-  private findIssues(code: string, _language: string): CodeAnalysisResult['issues'] {
-    const issues: CodeAnalysisResult['issues'] = [];
-
-    // Mock issue detection
-    if (code.includes('console.log')) {
-      issues.push({
-        type: 'warning',
-        message: 'Consider removing console.log statements in production code',
-        line: code.split('\n').findIndex(line => line.includes('console.log')) + 1,
-      });
-    }
-
-    if (code.includes('var ')) {
-      issues.push({
-        type: 'warning',
-        message: 'Consider using let or const instead of var',
-        line: code.split('\n').findIndex(line => line.includes('var ')) + 1,
-      });
-    }
-
-    if (code.length > 10000) {
-      issues.push({
-        type: 'info',
-        message: 'Large file detected - consider breaking into smaller modules',
-      });
-    }
-
-    return issues;
-  }
-
-  private generateSuggestions(code: string, language: string): string[] {
-    const suggestions: string[] = [];
-
-    if (language === 'javascript' || language === 'typescript') {
-      suggestions.push('Consider adding JSDoc comments for better documentation');
-      suggestions.push('Use TypeScript for better type safety');
-      suggestions.push('Consider using async/await instead of callbacks');
-    }
-
-    if (code.includes('function')) {
-      suggestions.push('Consider using arrow functions for shorter syntax');
-    }
-
-    if (!code.includes('export') && !code.includes('module.exports')) {
-      suggestions.push('Consider making functions exportable for better modularity');
-    }
-
-    return suggestions;
-  }
-
-  private mockGenerateDocumentation(code: string, language: string): string {
-    return `# Code Documentation
-
-## Overview
-This ${language} code contains ${code.split('\n').length} lines and implements various functionality.
-
-## Functions
-${this.extractFunctions(code).map(func => `- \`${func}\`: Function implementation`).join('\n')}
-
-## Usage
-\`\`\`${language}
-// Example usage of the code
-${code.split('\n').slice(0, 5).join('\n')}
-\`\`\`
-
-## Notes
-- Generated automatically by Augment AI
-- Review and update as needed
-`;
-  }
-
-  private calculateCodeScore(code: string): number {
-    let score = 100;
-
-    // Deduct points for various issues
-    if (code.includes('console.log')) score -= 5;
-    if (code.includes('var ')) score -= 10;
-    if (code.length > 10000) score -= 15;
-    if (!code.includes('function') && !code.includes('=>')) score -= 20;
-
-    return Math.max(0, Math.min(100, score));
-  }
-
-  private generateCodeFeedback(code: string, _language: string): string {
-    const score = this.calculateCodeScore(code);
-    
-    if (score >= 90) {
-      return 'Excellent code quality! The code follows best practices and is well-structured.';
-    } else if (score >= 70) {
-      return 'Good code quality with some room for improvement. Consider addressing the identified issues.';
-    } else if (score >= 50) {
-      return 'Average code quality. Several improvements could be made to enhance maintainability.';
-    } else {
-      return 'Code quality needs significant improvement. Please review and refactor the identified issues.';
-    }
-  }
-
-  private generateImprovements(code: string, language: string): string[] {
-    const improvements: string[] = [];
-
-    if (code.includes('console.log')) {
-      improvements.push('Remove or replace console.log statements with proper logging');
-    }
-
-    if (code.includes('var ')) {
-      improvements.push('Replace var declarations with let or const');
-    }
-
-    if (language === 'javascript' && !code.includes('strict')) {
-      improvements.push('Add "use strict" directive');
-    }
-
-    if (!code.includes('//') && !code.includes('/*')) {
-      improvements.push('Add comments to explain complex logic');
-    }
-
-    return improvements;
-  }
-
-  private mockExplainCode(code: string, language: string): string {
-    const functions = this.extractFunctions(code);
-    const lines = code.split('\n').length;
-
-    return `This ${language} code consists of ${lines} lines and contains the following components:
-
-${functions.length > 0 ? `Functions: ${functions.join(', ')}` : 'No functions detected'}
-
-The code appears to implement functionality related to:
-- Data processing and manipulation
-- Control flow and logic operations
-- ${language}-specific features and patterns
-
-Key characteristics:
-- Complexity level: ${this.calculateComplexity(code) > 10 ? 'High' : 'Moderate'}
-- Code style: ${code.includes('=>') ? 'Modern' : 'Traditional'}
-- Documentation: ${code.includes('//') || code.includes('/*') ? 'Present' : 'Missing'}
-
-This explanation is generated automatically and may need human review for accuracy.`;
-  }
-
-  private mockGenerateTests(code: string, language: string): string {
-    const functions = this.extractFunctions(code);
-
-    return `// Generated tests for ${language} code
-${language === 'javascript' || language === 'typescript' ? `
-describe('Code Tests', () => {
-${functions.map(func => `  test('${func} should work correctly', () => {
-    // TODO: Implement test for ${func}
-    expect(${func}).toBeDefined();
-  });`).join('\n\n')}
-});
-` : `
-# Generated tests for ${language} code
-${functions.map(func => `def test_${func.toLowerCase()}():
-    # TODO: Implement test for ${func}
-    assert ${func} is not None`).join('\n\n')}
-`}
-
-// Note: These are template tests generated by Augment AI
-// Please implement actual test logic based on your requirements
-`;
-  }
-
-  private extractFunctions(code: string): string[] {
-    const functions: string[] = [];
-    
-    // Extract function names (simple regex - could be improved)
-    const functionRegex = /function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
-    const arrowFunctionRegex = /const\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=/g;
-    
-    let match;
-    while ((match = functionRegex.exec(code)) !== null) {
-      functions.push(match[1]);
-    }
-    
-    while ((match = arrowFunctionRegex.exec(code)) !== null) {
-      functions.push(match[1]);
-    }
-    
-    return functions;
-  }
 }

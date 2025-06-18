@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { FileService } from '../../services/fileService.js';
 import { SystemService } from '../../services/systemService.js';
 import { AugmentService } from '../../services/augmentService.js';
+import { PerformanceService } from '../../services/performanceService.js';
 import { logToolExecution } from '../../utils/logger.js';
 import {
   fileReadSchema,
@@ -24,6 +25,7 @@ export function registerTools(server: McpServer): void {
   const fileService = new FileService();
   const systemService = new SystemService();
   const augmentService = new AugmentService();
+  const performanceService = new PerformanceService();
 
   // File Operations Tools
 
@@ -553,4 +555,142 @@ ${review.improvements.map(improvement => `- ${improvement}`).join('\n')}`;
       }
     );
   }
+
+  // Performance Monitoring Tools
+
+  server.tool(
+    'get-performance-report',
+    'Get current performance metrics and statistics',
+    {},
+    async () => {
+      const startTime = Date.now();
+      try {
+        const report = performanceService.generateReport();
+
+        const reportText = `Performance Report (${report.timestamp.toISOString()}):
+
+📊 System Metrics:
+- Uptime: ${Math.floor(report.uptime / 3600)}h ${Math.floor((report.uptime % 3600) / 60)}m
+- Memory Usage: ${report.memory.heapUsagePercent}% (${report.memory.heapUsed}MB / ${report.memory.heapTotal}MB)
+- RSS Memory: ${report.memory.rss}MB
+
+⚡ Performance:
+- Total Operations: ${report.performance.totalOperations}
+- Average Duration: ${report.performance.averageDuration}ms
+- Memory Trend: ${report.performance.memoryTrend > 0 ? '+' : ''}${report.performance.memoryTrend}MB
+
+🗄️ Cache Statistics:
+- File Cache: ${report.cache.fileCache.hitRate}% hit rate (${report.cache.fileCache.size}/${report.cache.fileCache.maxSize} entries)
+- System Cache: ${report.cache.systemInfoCache.hitRate}% hit rate (${report.cache.systemInfoCache.size}/${report.cache.systemInfoCache.maxSize} entries)
+- Search Cache: ${report.cache.searchCache.hitRate}% hit rate (${report.cache.searchCache.size}/${report.cache.searchCache.maxSize} entries)
+
+🔄 Concurrency:
+${Object.entries(report.concurrency).map(([category, stats]) =>
+  `- ${category}: ${stats.current}/${stats.maxConcurrent} active, ${stats.queued} queued`
+).join('\n')}
+
+🛡️ Rate Limiting:
+- Status: ${report.rateLimiting.enabled ? 'Enabled' : 'Disabled'}
+- Active Entries: ${report.rateLimiting.activeEntries}
+- Window: ${report.rateLimiting.windowMs}ms, Max: ${report.rateLimiting.maxRequests} requests
+
+🐌 Slowest Operations:
+${report.performance.slowestOperations.slice(0, 5).map(op =>
+  `- ${op.name}: ${op.duration.toFixed(2)}ms`
+).join('\n')}`;
+
+        logToolExecution('get-performance-report', {}, Date.now() - startTime, true);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: reportText,
+          }],
+        };
+      } catch (error) {
+        logToolExecution('get-performance-report', {}, Date.now() - startTime, false);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Error getting performance report: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    'optimize-performance',
+    'Analyze performance and apply optimizations',
+    {},
+    async () => {
+      const startTime = Date.now();
+      try {
+        const optimization = performanceService.optimizePerformance();
+
+        const optimizationText = `Performance Optimization Results:
+
+🔧 Actions Taken (${optimization.actions.length}):
+${optimization.actions.length > 0 ? optimization.actions.map(action => `- ${action}`).join('\n') : '- No immediate actions required'}
+
+💡 Recommendations (${optimization.recommendations.length}):
+${optimization.recommendations.length > 0 ? optimization.recommendations.map(rec => `- ${rec}`).join('\n') : '- System is performing optimally'}
+
+📈 Performance Summary:
+${JSON.stringify(performanceService.getPerformanceSummary(), null, 2)}`;
+
+        logToolExecution('optimize-performance', {
+          actionsCount: optimization.actions.length,
+          recommendationsCount: optimization.recommendations.length
+        }, Date.now() - startTime, true);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: optimizationText,
+          }],
+        };
+      } catch (error) {
+        logToolExecution('optimize-performance', {}, Date.now() - startTime, false);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Error optimizing performance: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    'clear-caches',
+    'Clear all performance caches to free memory',
+    {},
+    async () => {
+      const startTime = Date.now();
+      try {
+        performanceService.clearAllCaches();
+
+        logToolExecution('clear-caches', {}, Date.now() - startTime, true);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'All caches cleared successfully. Memory usage should be reduced.',
+          }],
+        };
+      } catch (error) {
+        logToolExecution('clear-caches', {}, Date.now() - startTime, false);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Error clearing caches: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
 }
